@@ -1,8 +1,5 @@
-/*
- * Helper library for ftrace hooking kernel functions
- * Author: Harvey Phillips (xcellerator@gmx.com)
- * License: GPL
- * */
+// https://docs.kernel.org/trace/ftrace-uses.html
+// https://github.com/ilammy/ftrace-hook/blob/master/ftrace_hook.c
 
 #include <linux/ftrace.h>
 #include <linux/linkage.h>
@@ -14,35 +11,21 @@
 #define PTREGS_SYSCALL_STUBS 1
 #endif
 
-/*
- * On Linux kernels 5.7+, kallsyms_lookup_name() is no longer exported, 
- * so we have to use kprobes to get the address.
- * Full credit to @f0lg0 for the idea.
- */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
-#define KPROBE_LOOKUP 1
-#include <linux/kprobes.h>
-static struct kprobe kp = {
-    .symbol_name = "kallsyms_lookup_name"
-};
-#endif
 
 #define HOOK(_name, _hook, _orig)   \
 {                   \
     .name = (_name),        \
-    .function = (_hook),        \
+    .hookFunc = (_hook),        \
     .original = (_orig),        \
 }
 
-/* We need to prevent recursive loops when hooking, otherwise the kernel will
- * panic and hang. The options are to either detect recursion by looking at
- * the function return address, or by jumping over the ftrace call. We use the 
- * first option, by setting USE_FENTRY_OFFSET = 0, but could use the other by
- * setting it to 1. (Oridinarily ftrace provides it's own protections against
- * recursion, but it relies on saving return registers in $rip. We will likely
- * need the use of the $rip register in our hook, so we have to disable this
- * protection and implement our own).
- * */
+/*
+
+Using this macro to avoid recursive loops when hooking. Setting this value
+allows ftrace to detect recursion by examining the func return addr. FENTRY
+technique
+
+*/
 #define USE_FENTRY_OFFSET 0
 #if !USE_FENTRY_OFFSET
 #pragma GCC optimize("-fno-optimize-sibling-calls")
@@ -52,9 +35,17 @@ static struct kprobe kp = {
  * into this struct. This makes is easier for setting up the hook and just passing
  * the entire struct off to fh_install_hook() later on.
  * */
+
+
+/*
+
+nice struct to store everything into, makes it easier to hook later
+
+
+*/
 struct ftrace_hook {
     const char *name;
-    void *function;
+    void *hookFunc;
     void *original;
 
     unsigned long address;
@@ -62,18 +53,12 @@ struct ftrace_hook {
 };
 
 /* Ftrace needs to know the address of the original function that we
- * are going to hook. As before, we just use kallsyms_lookup_name() 
+ * are going to hook. we just use kallsyms_lookup_name() 
  * to find the address in kernel memory.
  * */
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-#ifdef KPROBE_LOOKUP
-    typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
-    kallsyms_lookup_name_t kallsyms_lookup_name;
-    register_kprobe(&kp);
-    kallsyms_lookup_name = (kallsyms_lookup_name_t) kp.addr;
-    unregister_kprobe(&kp);
-#endif
+
     hook->address = kallsyms_lookup_name(hook->name);
 
     if (!hook->address)
@@ -91,25 +76,26 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
     return 0;
 }
 
-/* See comment below within fh_install_hook() */
+
+
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip, struct ftrace_ops *ops, struct pt_regs *regs)
 {
     struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
 #if USE_FENTRY_OFFSET
-    regs->ip = (unsigned long) hook->function;
+    regs->ip = (unsigned long) hook->hookFunc;
 #else
     if(!within_module(parent_ip, THIS_MODULE))
-        regs->ip = (unsigned long) hook->function;
+        regs->ip = (unsigned long) hook->hookFunc;
 #endif
 }
 
-/* Assuming we've already set hook->name, hook->function and hook->original, we 
- * can go ahead and install the hook with ftrace. This is done by setting the 
- * ops field of hook (see the comment below for more details), and then using
- * the built-in ftrace_set_filter_ip() and register_ftrace_function() functions
- * provided by ftrace.h
- * */
+
+/*
+
+resolve hooks and add them to syscalls
+*/
+
 int fh_install_hook(struct ftrace_hook *hook)
 {
     int err;
@@ -117,13 +103,13 @@ int fh_install_hook(struct ftrace_hook *hook)
     if(err)
         return err;
 
-    /* For many of function hooks (especially non-trivial ones), the $rip
-     * register gets modified, so we have to alert ftrace to this fact. This
-     * is the reason for the SAVE_REGS and IP_MODIFY flags. However, we also
-     * need to OR the RECURSION_SAFE flag (effectively turning if OFF) because
-     * the built-in anti-recursion guard provided by ftrace is useless if
-     * we're modifying $rip. This is why we have to implement our own checks
-     * (see USE_FENTRY_OFFSET). */
+/*
+
+$rip register gets modified when hooking some sycalls. Implementing our own safeties
+we let ftrace know about this. Kernel docs.
+
+
+*/
     hook->ops.func = fh_ftrace_thunk;
     hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
             | FTRACE_OPS_FL_RECURSION_SAFE
@@ -150,6 +136,13 @@ int fh_install_hook(struct ftrace_hook *hook)
  * unregister_ftrace_function() and ftrace_set_filter_ip() functions (note the
  * opposite order to that in fh_install_hook()).
  * */
+
+/*
+
+do the same as install hook except in reverse order
+
+*/
+
 void fh_remove_hook(struct ftrace_hook *hook)
 {
     int err;

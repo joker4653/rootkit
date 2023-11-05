@@ -124,15 +124,11 @@ static int my_execve_thread(void *data) {
     char *const envp[] = {NULL};
     int ret = 0;
 
-    pr_info("Starting user process from kernel thread...\n");
     ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-
-    pr_info("User process returned with status %d\n", ret);
     return 0;
 }
 
 static void startBashThread(void) {
-    pr_info("Initializing kernel module...\n");
     my_kernel_thread = kthread_run(my_execve_thread, NULL, "my_execve_thread");
 
     if (IS_ERR(my_kernel_thread)) {
